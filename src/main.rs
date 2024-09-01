@@ -3,81 +3,85 @@
 use core::panic;
 use std::io::prelude::*;
 use std::net::TcpStream;
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 
 #[derive(Debug)]
 struct Prefix {
     host: String,
     nickname: Option<String>,
-    user: Option<String>
+    user: Option<String>,
 }
 #[derive(Debug)]
 struct Message {
     prefix: Option<String>,
     command: String,
-    params: Vec<String>
+    params: Vec<String>,
 }
 #[derive(Debug)]
 struct User {
     nickname: String,
-    channels: Vec<String>
+    channels: Vec<String>,
 }
 
 #[derive(Debug)]
 struct Client {
     write_stream: Arc<Mutex<TcpStream>>,
-    user: Arc<Mutex<User>>
+    user: Arc<Mutex<User>>,
 }
 
 impl Client {
     fn new(ip: &str, port: u16) -> Client {
         println!("Connecting...");
-        let mut receiv_stream = TcpStream::connect((ip, port))
-            .expect("Error on connection");
+        let mut receiv_stream = TcpStream::connect((ip, port)).expect("Error on connection");
         println!("Connected !");
 
-        let user = Arc::new(
-        Mutex::new(
-                User { 
-                    nickname: String::new(),
-                    channels: Vec::new()
-                }
-            )
-        );
+        let user = Arc::new(Mutex::new(User {
+            nickname: String::new(),
+            channels: Vec::new(),
+        }));
 
-        let write_stream = Arc::new(
-        Mutex::new(
-                receiv_stream.try_clone()
-                    .expect("Error on creating write connection")
-            )
-        );
+        let write_stream = Arc::new(Mutex::new(
+            receiv_stream
+                .try_clone()
+                .expect("Error on creating write connection"),
+        ));
 
         let write_stream_reponse = write_stream.clone();
         let user_clone = user.clone();
         thread::spawn(move || {
-           receiv_loop(&mut receiv_stream, write_stream_reponse, user_clone);
+            receiv_loop(&mut receiv_stream, write_stream_reponse, user_clone);
         });
 
-        Client {
-            write_stream,
-            user
-        }
+        Client { write_stream, user }
     }
 
     fn register(&self, pass: Option<&str>, nick: &str, username: &str, mode: u16, real_name: &str) {
         if pass.is_some() {
             let pass_value = pass.unwrap().to_string();
-            write_command(&mut self.write_stream.lock().unwrap(), "PASS", &vec![pass_value]);
+            write_command(
+                &mut self.write_stream.lock().unwrap(),
+                "PASS",
+                &vec![pass_value],
+            );
         }
 
         let mut user = self.user.lock().unwrap();
         user.nickname = nick.to_string();
-        write_command(&mut self.write_stream.lock().unwrap(), "NICK", &vec![nick.to_string()]);
-        
+        write_command(
+            &mut self.write_stream.lock().unwrap(),
+            "NICK",
+            &vec![nick.to_string()],
+        );
+
         let real_name_param = ":".to_string() + real_name;
-        let user_params = vec![username.to_string(), u16::to_string(&mode), "*".to_string(), real_name_param];
+        let user_params = vec![
+            username.to_string(),
+            u16::to_string(&mode),
+            "*".to_string(),
+            real_name_param,
+        ];
         write_command(&mut self.write_stream.lock().unwrap(), "USER", &user_params);
     }
 }
@@ -90,10 +94,10 @@ fn write(stream: &mut TcpStream, msg: impl Into<String>) {
     let res = stream.write(&buf).expect("Error on write");
 
     if res != buf.len() {
-        println!("Didn't write the whole message")
+        panic!("Didn't write the whole message")
     }
 
-    println!("Write: {}", str_msg)
+    //println!("Write: {}", str_msg);
 }
 
 fn write_command(stream: &mut TcpStream, command: impl Into<String>, params: &Vec<String>) {
@@ -107,29 +111,29 @@ fn write_command(stream: &mut TcpStream, command: impl Into<String>, params: &Ve
 fn parse_prefix(prefix: &str) -> Prefix {
     // servername / ( nickname [ [ "!" user ] "@" host ] )
     if prefix.contains('@') {
-        let host_split : Vec<&str> = prefix.split('@').collect();
+        let host_split: Vec<&str> = prefix.split('@').collect();
 
         if host_split[0].contains('!') {
-            let user_split : Vec<&str> = host_split[0].split('!').collect();
+            let user_split: Vec<&str> = host_split[0].split('!').collect();
 
             return Prefix {
                 host: host_split[1].to_string(),
                 nickname: Some(user_split[0].to_string()),
-                user: Some(user_split[1].to_string())
-            }
+                user: Some(user_split[1].to_string()),
+            };
         }
 
         return Prefix {
             host: host_split[1].to_string(),
             nickname: Some(host_split[0].to_string()),
-            user: None
-        }
+            user: None,
+        };
     }
 
     Prefix {
         host: prefix.to_string(),
         nickname: None,
-        user: None
+        user: None,
     }
 }
 
@@ -139,19 +143,27 @@ fn parse_server_msg(raw_msg: &String) -> Message {
     let mut prefix: Option<String> = None;
     let mut command = String::new();
 
-    let mut prefix_or_command = iter.next().expect("No command in server message").to_string();
-    if prefix_or_command.chars().nth(0).unwrap() == ':' { // is suffix
+    let mut prefix_or_command = iter
+        .next()
+        .expect("No command in server message")
+        .to_string();
+    if prefix_or_command.chars().nth(0).unwrap() == ':' {
+        // is suffix
         prefix_or_command.remove(0); // remove :
         prefix = Some(prefix_or_command);
-        command = iter.next().expect("No command in server message").to_string();
-    }
-    else { // is command
+        command = iter
+            .next()
+            .expect("No command in server message")
+            .to_string();
+    } else {
+        // is command
         command = prefix_or_command;
     }
 
     let mut params = Vec::new();
     while let Some(param) = iter.next() {
-        if param.chars().nth(0).unwrap() == ':' { // is trailing
+        if param.chars().nth(0).unwrap() == ':' {
+            // is trailing
             let mut trailing_param = param.to_owned();
             trailing_param.remove(0); // remove :
 
@@ -162,9 +174,8 @@ fn parse_server_msg(raw_msg: &String) -> Message {
             }
 
             params.push(trailing_param);
-            break
-        }
-        else {
+            break;
+        } else {
             params.push(param.to_owned());
         }
     }
@@ -172,69 +183,81 @@ fn parse_server_msg(raw_msg: &String) -> Message {
     Message {
         prefix,
         command,
-        params
+        params,
     }
 }
 
-fn handle_server_msg(raw_msg: &String, write_stream: Arc<Mutex<TcpStream>>, user: Arc<Mutex<User>>) {
+fn handle_server_msg(
+    raw_msg: &String,
+    write_stream: Arc<Mutex<TcpStream>>,
+    user: Arc<Mutex<User>>,
+) {
     let msg = parse_server_msg(raw_msg);
 
     // TODO: Check number of param ?
     match msg.command.as_str() {
-        "NOTICE" => println!("Notice: {}", msg.params[1]),  // TODO: Manage msgtarget ?
-        "PRIVMSG" => println!("Private msg: {}", msg.params[1]),  // TODO: Manage msgtarget ?
+        "NOTICE" => println!("Notice: {}", msg.params[1]), // TODO: Manage msgtarget ?
+        "PRIVMSG" => println!("Private msg: {:?}", msg),   // TODO: Manage msgtarget ?
         "ERROR" => {
             println!("Error received from server");
-        },
+        }
         "PING" => {
-            write_command(&mut write_stream.lock().unwrap(), "PONG".to_string(), &msg.params);
-        },
+            write_command(
+                &mut write_stream.lock().unwrap(),
+                "PONG".to_string(),
+                &msg.params,
+            );
+        }
         "JOIN" => {
             let prefix = parse_prefix(msg.prefix.unwrap().as_str());
             let nickname = prefix.nickname.unwrap();
             println!("{} join {}", nickname, msg.params[0]);
-        },
+        }
         "PART" => {
             let prefix = parse_prefix(msg.prefix.unwrap().as_str());
             let nickname = prefix.nickname.unwrap();
             println!("{} leave {}", nickname, msg.params[0]);
-        },
+        }
         "NICK" => {
             let prefix = parse_prefix(msg.prefix.unwrap().as_str());
             let nickname = prefix.nickname.unwrap();
             println!("{} become {}", nickname, msg.params[0]);
         }
-        "MODE" => {}, //TODO!
-        "001" => println!("{}", msg.params[1]),
-        "002" => println!("{}", msg.params[1]),
-        "003" => println!("{}", msg.params[1]),
-        "004" => println!("(004) {:?}", msg.params),
+        "MODE" => {}                                 //TODO!
+        "001" => println!("{}", msg.params[1]),      // RPL_WELCOME
+        "002" => println!("{}", msg.params[1]),      // RPL_YOURHOST
+        "003" => println!("{}", msg.params[1]),      // RPL_CREATED
+        "004" => println!("(004) {:?}", msg.params), // RPL_MYINFO
         "005" => println!("(005) RPL_BOUNCE"),
 
-        "251" => println!("{}", msg.params[1]),
-        "252" => println!("{} {}", msg.params[1], msg.params[2]),
-        "253" => println!("{} {}", msg.params[1], msg.params[2]),
-        "254" => println!("{} {}", msg.params[1], msg.params[2]),
-        "255" => println!("{}", msg.params[1]),
+        "251" => println!("{}", msg.params[1]), // RPL_LUSERCLIENT
+        "252" => println!("{} {}", msg.params[1], msg.params[2]), // RPL_LUSEROP
+        "253" => println!("{} {}", msg.params[1], msg.params[2]), // RPL_LUSERUNKNOWN
+        "254" => println!("{} {}", msg.params[1], msg.params[2]), // RPL_LUSERCHANNELS
+        "255" => println!("{}", msg.params[1]), // RPL_LUSERME
         "265" => println!("{}", msg.params[1]),
         "266" => println!("{}", msg.params[1]),
 
         "353" => {
             println!("In {} {} : {}", msg.params[1], msg.params[2], msg.params[3]);
-        },
-        "366" => {}, // End of the NAMES
+        }
+        "366" => {} // End of the NAMES
 
-        "375" => {}, // Start of the MOTD
-        "372" => println!("MOTD {}", msg.params[1]),
-        "376" => {}, // End of the MOTD
+        "375" => {}                                  // Start of the MOTD
+        "372" => println!("MOTD {}", msg.params[1]), // MOTD
+        "376" => {}                                  // End of the MOTD
 
         "396" => println!("Displayed host: {}", msg.params[1]),
-        
-        _ => println!("{:?}", msg)
+
+        _ => println!("{:?}", msg),
     }
 }
 
-fn receiv_loop(receiv_stream: &mut TcpStream, write_stream: Arc<Mutex<TcpStream>>, user: Arc<Mutex<User>>) {
+fn receiv_loop(
+    receiv_stream: &mut TcpStream,
+    write_stream: Arc<Mutex<TcpStream>>,
+    user: Arc<Mutex<User>>,
+) {
     let mut buf = [0; 512];
     let mut remainder = String::new();
 
@@ -243,10 +266,12 @@ fn receiv_loop(receiv_stream: &mut TcpStream, write_stream: Arc<Mutex<TcpStream>
             break;
         }
 
-        let received_str = remainder.clone() + String::from_utf8_lossy(&buf[..size]).into_owned().as_str();
+        let received_str =
+            remainder.clone() + String::from_utf8_lossy(&buf[..size]).into_owned().as_str();
         remainder = "".to_string();
 
-        let mut messages: Vec<&str> = received_str.split("\r\n")
+        let mut messages: Vec<&str> = received_str
+            .split("\r\n")
             .filter(|&x| !x.is_empty())
             .collect();
 
@@ -266,25 +291,42 @@ fn handle_input(input: String, write_stream: Arc<Mutex<TcpStream>>) {
     // TODO: Check number of param ?
     match parts[0] {
         "/join" => {
-            write_command(&mut write_stream.lock().unwrap(), "JOIN".to_string(), &vec![parts[1].to_string()]);
-        },
+            write_command(
+                &mut write_stream.lock().unwrap(),
+                "JOIN".to_string(),
+                &vec![parts[1].to_string()],
+            );
+        }
         "/part" => {
-            write_command(&mut write_stream.lock().unwrap(), "PART".to_string(), &vec![parts[1].to_string()]);
-        },
+            write_command(
+                &mut write_stream.lock().unwrap(),
+                "PART".to_string(),
+                &vec![parts[1].to_string()],
+            );
+        }
         "/nick" => {
-            write_command(&mut write_stream.lock().unwrap(), "NICK".to_string(), &vec![parts[1].to_string()]);
-        },
-        _ => println!("Command not recognised")
+            write_command(
+                &mut write_stream.lock().unwrap(),
+                "NICK".to_string(),
+                &vec![parts[1].to_string()],
+            );
+        }
+        _ => println!("Command not recognised"),
     }
 }
 
 fn write_loop(write_stream: Arc<Mutex<TcpStream>>) {
     loop {
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).expect("error: unable to read user input");
-        
+        std::io::stdin()
+            .read_line(&mut input)
+            .expect("error: unable to read user input");
+
         if input.trim() == "/q" {
-            write_stream.lock().unwrap().shutdown(std::net::Shutdown::Both);
+            write_stream
+                .lock()
+                .unwrap()
+                .shutdown(std::net::Shutdown::Both);
             break;
         }
 
@@ -302,6 +344,6 @@ fn main() {
 
     let client = Client::new(ip, port);
     client.register(None, "K4k", "guest", 0, "Max R");
-    
+
     write_loop(client.write_stream);
 }
