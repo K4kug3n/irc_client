@@ -13,6 +13,66 @@ struct Message {
     command: String,
     params: Vec<String>
 }
+#[derive(Debug)]
+struct User {
+    nickname: String,
+    channels: Vec<String>
+}
+
+#[derive(Debug)]
+struct Client {
+    write_stream: Arc<Mutex<TcpStream>>,
+    user: Arc<Mutex<User>>
+}
+
+impl Client {
+    fn new(ip: &str, port: u16) -> Client {
+        println!("Connecting...");
+        let mut receiv_stream = TcpStream::connect((ip, port))
+            .expect("Error on connection");
+        println!("Connected !");
+
+        let user = Arc::new(
+        Mutex::new(
+                User { 
+                    nickname: String::new(),
+                    channels: Vec::new()
+                }
+            )
+        );
+
+        let write_stream = Arc::new(
+        Mutex::new(
+                receiv_stream.try_clone()
+                    .expect("Error on creating write connection")
+            )
+        );
+
+        let write_stream_reponse = write_stream.clone();
+        let user_clone = user.clone();
+        thread::spawn(move || {
+           receiv_loop(&mut receiv_stream, write_stream_reponse, user_clone);
+        });
+
+        Client {
+            write_stream,
+            user
+        }
+    }
+
+    fn register(&self, pass: Option<&str>, nick: &str, user: &str, mode: u16, real_name: &str) {
+        if pass.is_some() {
+            let pass_value = pass.unwrap().to_string();
+            write_command(&mut self.write_stream.lock().unwrap(), "PASS", &vec![pass_value]);
+        }
+
+        write_command(&mut self.write_stream.lock().unwrap(), "NICK", &vec![nick.to_string()]);
+
+        let real_name_param = ":".to_string() + real_name;
+        let user_params = vec![user.to_string(), u16::to_string(&mode), "*".to_string(), real_name_param];
+        write_command(&mut self.write_stream.lock().unwrap(), "USER", &user_params);
+    }
+}
 
 fn write(stream: &mut TcpStream, msg: impl Into<String>) {
     let mut str_msg = msg.into();
@@ -78,7 +138,7 @@ fn parse_server_msg(raw_msg: &String) -> Message {
     }
 }
 
-fn handle_server_msg(raw_msg: &String, write_stream: Arc<Mutex<TcpStream>>) {
+fn handle_server_msg(raw_msg: &String, write_stream: Arc<Mutex<TcpStream>>, user: Arc<Mutex<User>>) {
     let msg = parse_server_msg(raw_msg);
 
     // TODO: Check number of param ?
@@ -130,7 +190,7 @@ fn handle_server_msg(raw_msg: &String, write_stream: Arc<Mutex<TcpStream>>) {
     }
 }
 
-fn receiv_loop(receiv_stream: &mut TcpStream, write_stream: Arc<Mutex<TcpStream>>) {
+fn receiv_loop(receiv_stream: &mut TcpStream, write_stream: Arc<Mutex<TcpStream>>, user: Arc<Mutex<User>>) {
     let mut buf = [0; 512];
     let mut remainder = String::new();
 
@@ -151,7 +211,7 @@ fn receiv_loop(receiv_stream: &mut TcpStream, write_stream: Arc<Mutex<TcpStream>
         }
 
         for msg in messages {
-            handle_server_msg(&msg.to_owned(), write_stream.clone());
+            handle_server_msg(&msg.to_owned(), write_stream.clone(), user.clone());
         }
     }
 }
@@ -196,26 +256,8 @@ fn main() {
     let ip = "irc.freenode.net";
     let port = 6667;
 
-    println!("Connecting...");
-    let mut receiv_stream = TcpStream::connect((ip, port))
-        .expect("Error on connection");
-    println!("Connected !");
-
-    let write_stream = Arc::new(
-    Mutex::new(
-            receiv_stream.try_clone()
-                .expect("Error on creating write connection")
-        )
-    );
-
-    let write_stream_reponse = write_stream.clone();
-    thread::spawn(move || {
-       receiv_loop(&mut receiv_stream, write_stream_reponse);
-    });
-
-    //write(&mut stream, "PASS pass");
-    write(&mut write_stream.lock().unwrap(), "NICK K4k");
-    write(&mut write_stream.lock().unwrap(), "USER guest 0 * :Max R");
-
-    write_loop(write_stream);
+    let client = Client::new(ip, port);
+    client.register(None, "K4k", "guest", 0, "Max R");
+    
+    write_loop(client.write_stream);
 }
