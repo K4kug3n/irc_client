@@ -96,8 +96,6 @@ fn write(stream: &mut TcpStream, msg: impl Into<String>) {
     if res != buf.len() {
         panic!("Didn't write the whole message")
     }
-
-    //println!("Write: {}", str_msg);
 }
 
 fn write_command(stream: &mut TcpStream, command: impl Into<String>, params: &Vec<String>) {
@@ -187,6 +185,53 @@ fn parse_server_msg(raw_msg: &String) -> Message {
     }
 }
 
+fn handle_notice_msg(msg: &Message, write_stream: Arc<Mutex<TcpStream>>) {
+    println!("Notice: {}", msg.params[1]) // TODO: Manage msgtarget ?
+}
+
+fn handle_private_msg(msg: &Message, write_stream: Arc<Mutex<TcpStream>>) {
+    let prefix = parse_prefix(msg.prefix.clone().unwrap().as_str());
+    let from = prefix.nickname.unwrap();
+    println!("{} -> {} : {}", from, msg.params[0], msg.params[1]);
+}
+
+fn handle_join_msg(msg: &Message, user: &mut User) {
+    let prefix = parse_prefix(msg.prefix.clone().unwrap().as_str());
+    let nickname = prefix.nickname.unwrap();
+
+    if nickname == user.nickname {
+        println!("You join {}", msg.params[0]);
+        user.channels.push(msg.params[0].clone());
+    } else {
+        println!("{} join {}", nickname, msg.params[0]);
+    }
+}
+
+fn handle_part_msg(msg: &Message, user: &mut User) {
+    let prefix = parse_prefix(msg.prefix.clone().unwrap().as_str());
+    let nickname = prefix.nickname.unwrap();
+
+    if nickname == user.nickname {
+        println!("You leave {}", msg.params[0]);
+        user.channels
+            .retain(|channel| channel.as_str() != msg.params[0]);
+    } else {
+        println!("{} leave {}", nickname, msg.params[0]);
+    }
+}
+
+fn handle_nick_msg(msg: &Message, user: &mut User) {
+    let prefix = parse_prefix(msg.prefix.clone().unwrap().as_str());
+    let nickname = prefix.nickname.unwrap();
+
+    if nickname == user.nickname {
+        println!("You become {}", msg.params[0]);
+        user.nickname = msg.params[0].clone();
+    } else {
+        println!("{} become {}", nickname, msg.params[0]);
+    }
+}
+
 fn handle_server_msg(
     raw_msg: &String,
     write_stream: Arc<Mutex<TcpStream>>,
@@ -196,8 +241,8 @@ fn handle_server_msg(
 
     // TODO: Check number of param ?
     match msg.command.as_str() {
-        "NOTICE" => println!("Notice: {}", msg.params[1]), // TODO: Manage msgtarget ?
-        "PRIVMSG" => println!("Private msg: {:?}", msg),   // TODO: Manage msgtarget ?
+        "NOTICE" => handle_notice_msg(&msg, write_stream),
+        "PRIVMSG" => handle_private_msg(&msg, write_stream),
         "ERROR" => {
             println!("Error received from server");
         }
@@ -208,21 +253,10 @@ fn handle_server_msg(
                 &msg.params,
             );
         }
-        "JOIN" => {
-            let prefix = parse_prefix(msg.prefix.unwrap().as_str());
-            let nickname = prefix.nickname.unwrap();
-            println!("{} join {}", nickname, msg.params[0]);
-        }
-        "PART" => {
-            let prefix = parse_prefix(msg.prefix.unwrap().as_str());
-            let nickname = prefix.nickname.unwrap();
-            println!("{} leave {}", nickname, msg.params[0]);
-        }
-        "NICK" => {
-            let prefix = parse_prefix(msg.prefix.unwrap().as_str());
-            let nickname = prefix.nickname.unwrap();
-            println!("{} become {}", nickname, msg.params[0]);
-        }
+        "JOIN" => handle_join_msg(&msg, &mut user.lock().unwrap()),
+        "PART" => handle_part_msg(&msg, &mut user.lock().unwrap()),
+        "NICK" => handle_nick_msg(&msg, &mut user.lock().unwrap()),
+
         "MODE" => {}                                 //TODO!
         "001" => println!("{}", msg.params[1]),      // RPL_WELCOME
         "002" => println!("{}", msg.params[1]),      // RPL_YOURHOST
@@ -243,9 +277,9 @@ fn handle_server_msg(
         }
         "366" => {} // End of the NAMES
 
-        "375" => {}                                  // Start of the MOTD
-        "372" => println!("MOTD {}", msg.params[1]), // MOTD
-        "376" => {}                                  // End of the MOTD
+        "375" => {}                             // Start of the MOTD
+        "372" => println!("{}", msg.params[1]), // MOTD
+        "376" => {}                             // End of the MOTD
 
         "396" => println!("Displayed host: {}", msg.params[1]),
 
