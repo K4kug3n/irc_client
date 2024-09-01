@@ -8,6 +8,12 @@ use std::sync::Arc;
 use std::thread;
 
 #[derive(Debug)]
+struct Prefix {
+    host: String,
+    nickname: Option<String>,
+    user: Option<String>
+}
+#[derive(Debug)]
 struct Message {
     prefix: Option<String>,
     command: String,
@@ -60,16 +66,18 @@ impl Client {
         }
     }
 
-    fn register(&self, pass: Option<&str>, nick: &str, user: &str, mode: u16, real_name: &str) {
+    fn register(&self, pass: Option<&str>, nick: &str, username: &str, mode: u16, real_name: &str) {
         if pass.is_some() {
             let pass_value = pass.unwrap().to_string();
             write_command(&mut self.write_stream.lock().unwrap(), "PASS", &vec![pass_value]);
         }
 
+        let mut user = self.user.lock().unwrap();
+        user.nickname = nick.to_string();
         write_command(&mut self.write_stream.lock().unwrap(), "NICK", &vec![nick.to_string()]);
-
+        
         let real_name_param = ":".to_string() + real_name;
-        let user_params = vec![user.to_string(), u16::to_string(&mode), "*".to_string(), real_name_param];
+        let user_params = vec![username.to_string(), u16::to_string(&mode), "*".to_string(), real_name_param];
         write_command(&mut self.write_stream.lock().unwrap(), "USER", &user_params);
     }
 }
@@ -88,12 +96,41 @@ fn write(stream: &mut TcpStream, msg: impl Into<String>) {
     println!("Write: {}", str_msg)
 }
 
-fn write_command(stream: &mut TcpStream, command: String, params: &Vec<String>) {
-    let mut msg = command;
+fn write_command(stream: &mut TcpStream, command: impl Into<String>, params: &Vec<String>) {
+    let mut msg = command.into();
     msg.push(' ');
     msg.push_str(params.join(" ").as_str());
 
     write(stream, msg);
+}
+
+fn parse_prefix(prefix: &str) -> Prefix {
+    // servername / ( nickname [ [ "!" user ] "@" host ] )
+    if prefix.contains('@') {
+        let host_split : Vec<&str> = prefix.split('@').collect();
+
+        if host_split[0].contains('!') {
+            let user_split : Vec<&str> = host_split[0].split('!').collect();
+
+            return Prefix {
+                host: host_split[1].to_string(),
+                nickname: Some(user_split[0].to_string()),
+                user: Some(user_split[1].to_string())
+            }
+        }
+
+        return Prefix {
+            host: host_split[1].to_string(),
+            nickname: Some(host_split[0].to_string()),
+            user: None
+        }
+    }
+
+    Prefix {
+        host: prefix.to_string(),
+        nickname: None,
+        user: None
+    }
 }
 
 fn parse_server_msg(raw_msg: &String) -> Message {
@@ -102,13 +139,14 @@ fn parse_server_msg(raw_msg: &String) -> Message {
     let mut prefix: Option<String> = None;
     let mut command = String::new();
 
-    let Some(prefix_or_command) = iter.next() else { panic!("No command in server message") };
+    let mut prefix_or_command = iter.next().expect("No command in server message").to_string();
     if prefix_or_command.chars().nth(0).unwrap() == ':' { // is suffix
-        prefix = Some(prefix_or_command.to_owned());
-        command = if let Some(msg_part) = iter.next() { msg_part.to_owned() } else { panic!("No command in server message") };
+        prefix_or_command.remove(0); // remove :
+        prefix = Some(prefix_or_command);
+        command = iter.next().expect("No command in server message").to_string();
     }
     else { // is command
-        command = prefix_or_command.to_owned();
+        command = prefix_or_command;
     }
 
     let mut params = Vec::new();
@@ -152,13 +190,19 @@ fn handle_server_msg(raw_msg: &String, write_stream: Arc<Mutex<TcpStream>>, user
             write_command(&mut write_stream.lock().unwrap(), "PONG".to_string(), &msg.params);
         },
         "JOIN" => {
-            println!("{:?} join {}", msg.prefix, msg.params[0]);
+            let prefix = parse_prefix(msg.prefix.unwrap().as_str());
+            let nickname = prefix.nickname.unwrap();
+            println!("{} join {}", nickname, msg.params[0]);
         },
         "PART" => {
-            println!("{:?} leave {}", msg.prefix, msg.params[0]);
+            let prefix = parse_prefix(msg.prefix.unwrap().as_str());
+            let nickname = prefix.nickname.unwrap();
+            println!("{} leave {}", nickname, msg.params[0]);
         },
         "NICK" => {
-            println!("{:?} become {}", msg.prefix, msg.params[0]);
+            let prefix = parse_prefix(msg.prefix.unwrap().as_str());
+            let nickname = prefix.nickname.unwrap();
+            println!("{} become {}", nickname, msg.params[0]);
         }
         "MODE" => {}, //TODO!
         "001" => println!("{}", msg.params[1]),
