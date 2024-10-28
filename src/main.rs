@@ -215,6 +215,12 @@ fn handle_part_msg(msg: &Message, user: &mut User) {
         println!("You leave {}", msg.params[0]);
         user.channels
             .retain(|channel| channel.as_str() != msg.params[0]);
+
+        if user.channels.is_empty() {
+            println!("You are not in any channel");
+        } else {
+            println!("Current channel: {}", user.channels.last().unwrap());
+        }
     } else {
         println!("{} leave {}", nickname, msg.params[0]);
     }
