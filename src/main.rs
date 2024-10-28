@@ -3,6 +3,7 @@
 use core::panic;
 use std::io::prelude::*;
 use std::net::TcpStream;
+use std::str::SplitWhitespace;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -84,6 +85,96 @@ impl Client {
         ];
         write_command(&mut self.write_stream.lock().unwrap(), "USER", &user_params);
     }
+
+    fn handle_commands(&self, command: &str, params: &[&str]) {
+        // TODO: Check number of param ?
+        match command {
+            "/join" => {
+                let user = self.user.lock().unwrap();
+                if user.channels.contains(&params[0].to_string()) {
+                    println!("You are already in {}", params[0]);
+                    return;
+                }
+
+                write_command(
+                    &mut self.write_stream.lock().unwrap(),
+                    "JOIN".to_string(),
+                    &vec![params[0].to_string()],
+                );
+            }
+            "/part" => {
+                let user = self.user.lock().unwrap();
+                if !user.channels.contains(&params[0].to_string()) {
+                    println!("You are not in {}", params[0]);
+                    return;
+                }
+
+                write_command(
+                    &mut self.write_stream.lock().unwrap(),
+                    "PART".to_string(),
+                    &vec![params[0].to_string()],
+                );
+            }
+            "/nick" => {
+                write_command(
+                    &mut self.write_stream.lock().unwrap(),
+                    "NICK".to_string(),
+                    &vec![params[0].to_string()],
+                );
+            }
+            _ => println!("Command not recognised"),
+        }
+    }
+
+    fn handle_input(&self, input: &str) {
+        if input.chars().nth(0).unwrap() == '/' {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+
+            self.handle_commands(parts[0], &parts[1..]);
+        } else {
+            let user = self.user.lock().unwrap();
+            if user.channels.is_empty() {
+                println!("You are not in any channel");
+                return;
+            }
+
+            let msg = ":".to_string() + input;
+            let channel = user.channels.last().unwrap().to_owned();
+            println!(
+                "You -> {} : {}",
+                channel,
+                input
+            );
+
+            write_command(
+                &mut self.write_stream.lock().unwrap(),
+                "PRIVMSG".to_string(),
+                &vec![channel, msg],
+            );
+        }
+    }
+
+    fn input_loop(&self) {
+        loop {
+            let mut input = String::new();
+            std::io::stdin()
+                .read_line(&mut input)
+                .expect("error: unable to read user input");
+
+            if input.trim() == "/q" {
+                if let Ok(stream) = self.write_stream.lock() {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+
+                break;
+            }
+            else if input.trim() == "" {
+                continue;
+            }
+
+            self.handle_input(input.trim());
+        }
+    }
 }
 
 fn write(stream: &mut TcpStream, msg: impl Into<String>) {
@@ -135,28 +226,31 @@ fn parse_prefix(prefix: &str) -> Prefix {
     }
 }
 
-fn parse_server_msg(raw_msg: &String) -> Message {
-    let mut iter = raw_msg.split_whitespace();
-
-    let mut prefix: Option<String> = None;
-    let mut command = String::new();
-
-    let mut prefix_or_command = iter
+fn parse_prefix_and_command(iter: &mut SplitWhitespace) -> (Option<String>, String) {
+    let mut prefix_and_command = iter
         .next()
         .expect("No command in server message")
         .to_string();
-    if prefix_or_command.chars().nth(0).unwrap() == ':' {
+
+    if prefix_and_command.chars().nth(0).unwrap() == ':' {
         // is suffix
-        prefix_or_command.remove(0); // remove :
-        prefix = Some(prefix_or_command);
-        command = iter
+        prefix_and_command.remove(0); // remove :
+        let prefix = Some(prefix_and_command);
+        let command = iter
             .next()
             .expect("No command in server message")
             .to_string();
-    } else {
-        // is command
-        command = prefix_or_command;
-    }
+
+        return (prefix, command);
+    };
+
+    return (None, prefix_and_command)
+}
+
+fn parse_server_msg(raw_msg: &String) -> Message {
+    let mut iter = raw_msg.split_whitespace();
+
+    let (prefix, command) = parse_prefix_and_command(&mut iter);
 
     let mut params = Vec::new();
     while let Some(param) = iter.next() {
@@ -185,7 +279,7 @@ fn parse_server_msg(raw_msg: &String) -> Message {
     }
 }
 
-fn handle_notice_msg(msg: &Message, write_stream: Arc<Mutex<TcpStream>>) {
+fn handle_notice_msg(msg: &Message) {
     println!("Notice: {}", msg.params[1]) // TODO: Manage msgtarget ?
 }
 
@@ -259,7 +353,7 @@ fn handle_server_msg(
 
     // TODO: Check number of param ?
     match msg.command.as_str() {
-        "NOTICE" => handle_notice_msg(&msg, write_stream),
+        "NOTICE" => handle_notice_msg(&msg),
         "PRIVMSG" => handle_private_msg(&msg, write_stream),
         "ERROR" => {
             println!("Error received from server");
@@ -306,7 +400,7 @@ fn handle_server_msg(
 
         "476" => println!("{}: {}", msg.params[2], msg.params[1]), // Invalid channel name
 
-        _ => println!("{:?}", msg),
+        _ => println!("[{:?}] {} {:?}", msg.prefix, msg.command, msg.params),
     }
 }
 
@@ -342,59 +436,6 @@ fn receiv_loop(
     }
 }
 
-fn handle_input(input: String, write_stream: Arc<Mutex<TcpStream>>) {
-    let parts: Vec<&str> = input.split_whitespace().collect();
-
-    // TODO: Check number of param ?
-    match parts[0] {
-        "/join" => {
-            write_command(
-                &mut write_stream.lock().unwrap(),
-                "JOIN".to_string(),
-                &vec![parts[1].to_string()],
-            );
-        }
-        "/part" => {
-            write_command(
-                &mut write_stream.lock().unwrap(),
-                "PART".to_string(),
-                &vec![parts[1].to_string()],
-            );
-        }
-        "/nick" => {
-            write_command(
-                &mut write_stream.lock().unwrap(),
-                "NICK".to_string(),
-                &vec![parts[1].to_string()],
-            );
-        }
-        _ => println!("Command not recognised"),
-    }
-}
-
-fn write_loop(write_stream: Arc<Mutex<TcpStream>>) {
-    loop {
-        let mut input = String::new();
-        std::io::stdin()
-            .read_line(&mut input)
-            .expect("error: unable to read user input");
-
-        if input.trim() == "/q" {
-            write_stream
-                .lock()
-                .unwrap()
-                .shutdown(std::net::Shutdown::Both);
-            break;
-        }
-
-        if input.trim() == "" {
-            continue;
-        }
-
-        handle_input(input.trim().to_string(), write_stream.clone());
-    }
-}
-
 fn main() {
     let ip = "irc.freenode.net";
     let port = 6667;
@@ -402,5 +443,5 @@ fn main() {
     let client = Client::new(ip, port);
     client.register(None, "K4k", "guest", 0, "Max R");
 
-    write_loop(client.write_stream);
+    client.input_loop();
 }
