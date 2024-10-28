@@ -192,6 +192,18 @@ fn handle_notice_msg(msg: &Message, write_stream: Arc<Mutex<TcpStream>>) {
 fn handle_private_msg(msg: &Message, write_stream: Arc<Mutex<TcpStream>>) {
     let prefix = parse_prefix(msg.prefix.clone().unwrap().as_str());
     let from = prefix.nickname.unwrap();
+
+    let version_request  = (0x01 as char).to_string() + "VERSION" + (0x01 as char).to_string().as_str();
+    if msg.params[1] == version_request {
+        write_command(
+            &mut write_stream.lock().unwrap(),
+            "NOTICE",
+            &vec![from, (0x01 as char).to_string() + "VERSION CustomIRCClient 0.1" + (0x01 as char).to_string().as_str()]
+        );
+
+        return
+    }
+
     println!("{} -> {} : {}", from, msg.params[0], msg.params[1]);
 }
 
@@ -278,6 +290,9 @@ fn handle_server_msg(
         "265" => println!("{}", msg.params[1]),
         "266" => println!("{}", msg.params[1]),
 
+        "332" => println!("{}", msg.params[1]), // RPL_TOPIC
+        "333" => println!("{}", msg.params[1]), // RPL_TOPICWHOTIME
+
         "353" => {
             println!("In {} {} : {}", msg.params[1], msg.params[2], msg.params[3]);
         }
@@ -288,6 +303,8 @@ fn handle_server_msg(
         "376" => {}                             // End of the MOTD
 
         "396" => println!("Displayed host: {}", msg.params[1]),
+
+        "476" => println!("{}: {}", msg.params[2], msg.params[1]), // Invalid channel name
 
         _ => println!("{:?}", msg),
     }
